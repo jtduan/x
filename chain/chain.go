@@ -8,6 +8,7 @@ import (
 	"github.com/go-gost/core/logger"
 	"github.com/go-gost/core/metadata"
 	"github.com/go-gost/core/selector"
+	xctx "github.com/go-gost/x/ctx"
 )
 
 var (
@@ -91,9 +92,11 @@ func (c *Chain) Route(ctx context.Context, network, address string, opts ...chai
 
 	rt := NewRoute(ChainRouteOption(c))
 	for _, h := range c.hops {
+		protocol := xctx.InboundProtocolFromContext(ctx).String()
 		node := h.Select(ctx,
 			hop.NetworkSelectOption(network),
 			hop.AddrSelectOption(address),
+			hop.ProtocolSelectOption(protocol),
 			hop.HostSelectOption(options.Host),
 		)
 		if node == nil {

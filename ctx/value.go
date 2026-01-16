@@ -5,6 +5,24 @@ import (
 	"net"
 )
 
+type (
+	InboundProtocol    string
+	inboundProtocolKey struct{}
+)
+
+func (p InboundProtocol) String() string {
+	return string(p)
+}
+
+func ContextWithInboundProtocol(ctx context.Context, proto InboundProtocol) context.Context {
+	return context.WithValue(ctx, inboundProtocolKey{}, proto)
+}
+
+func InboundProtocolFromContext(ctx context.Context) InboundProtocol {
+	v, _ := ctx.Value(inboundProtocolKey{}).(InboundProtocol)
+	return v
+}
+
 type Context interface {
 	Context() context.Context
 }

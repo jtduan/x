@@ -105,14 +105,17 @@ func (h *autoHandler) Handle(ctx context.Context, conn net.Conn, opts ...handler
 	switch b[0] {
 	case gosocks4.Ver4: // socks4
 		if h.socks4Handler != nil {
+			ctx = ctxvalue.ContextWithInboundProtocol(ctx, ctxvalue.InboundProtocol("socks4"))
 			return h.socks4Handler.Handle(ctx, conn)
 		}
 	case gosocks5.Ver5: // socks5
 		if h.socks5Handler != nil {
+			ctx = ctxvalue.ContextWithInboundProtocol(ctx, ctxvalue.InboundProtocol("socks5"))
 			return h.socks5Handler.Handle(ctx, conn)
 		}
 	default: // http
 		if h.httpHandler != nil {
+			ctx = ctxvalue.ContextWithInboundProtocol(ctx, ctxvalue.InboundProtocol("http"))
 			return h.httpHandler.Handle(ctx, conn)
 		}
 	}
