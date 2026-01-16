@@ -1,4 +1,4 @@
-module github.com/jtduan/x
+module github.com/go-gost/x
 
 go 1.24.0
 
