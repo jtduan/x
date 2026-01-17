@@ -96,7 +96,14 @@ func (p *grpcPlugin) Select(ctx context.Context, opts ...hop.SelectOption) *chai
 		})
 	if err != nil {
 		p.log.Error(err)
-		return nil
+		return chain.NewNode(p.name, p.addr,
+			chain.TransportNodeOption(&failingTransport{
+				err: &statusError{
+					statusCode: 451,
+					err:        fmt.Errorf("hop plugin %s: %w", p.name, err),
+				},
+			}),
+		)
 	}
 	if r == nil || len(r.Node) == 0 {
 		return chain.NewNode(p.name, p.addr,
