@@ -267,6 +267,11 @@ func (h *http2Handler) roundTrip(ctx context.Context, w http.ResponseWriter, req
 	if err != nil {
 		log.Error(err)
 		resp.StatusCode = http.StatusServiceUnavailable
+		if sc, ok := err.(interface{ StatusCode() int }); ok {
+			if code := sc.StatusCode(); code >= http.StatusContinue && code < 600 {
+				resp.StatusCode = code
+			}
+		}
 		w.WriteHeader(resp.StatusCode)
 		return err
 	}

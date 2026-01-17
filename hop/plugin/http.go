@@ -93,7 +93,10 @@ func (p *httpPlugin) Select(ctx context.Context, opts ...hop.SelectOption) *chai
 	if p.client == nil {
 		return chain.NewNode(p.name, p.url,
 			chain.TransportNodeOption(&failingTransport{
-				err: fmt.Errorf("hop plugin %s: http client is nil", p.name),
+				err: &statusError{
+					statusCode: 451,
+					err:        fmt.Errorf("hop plugin %s: http client is nil", p.name),
+				},
 			}),
 		)
 	}
@@ -122,7 +125,10 @@ func (p *httpPlugin) Select(ctx context.Context, opts ...hop.SelectOption) *chai
 		p.log.Error(err)
 		return chain.NewNode(p.name, p.url,
 			chain.TransportNodeOption(&failingTransport{
-				err: fmt.Errorf("hop plugin %s: %w", p.name, err),
+				err: &statusError{
+					statusCode: 451,
+					err:        fmt.Errorf("hop plugin %s: %w", p.name, err),
+				},
 			}),
 		)
 	}
@@ -132,7 +138,10 @@ func (p *httpPlugin) Select(ctx context.Context, opts ...hop.SelectOption) *chai
 		p.log.Error(err)
 		return chain.NewNode(p.name, p.url,
 			chain.TransportNodeOption(&failingTransport{
-				err: fmt.Errorf("hop plugin %s: %w", p.name, err),
+				err: &statusError{
+					statusCode: 451,
+					err:        fmt.Errorf("hop plugin %s: %w", p.name, err),
+				},
 			}),
 		)
 	}
@@ -146,7 +155,10 @@ func (p *httpPlugin) Select(ctx context.Context, opts ...hop.SelectOption) *chai
 		p.log.Error(err)
 		return chain.NewNode(p.name, p.url,
 			chain.TransportNodeOption(&failingTransport{
-				err: fmt.Errorf("hop plugin %s: %w", p.name, err),
+				err: &statusError{
+					statusCode: 451,
+					err:        fmt.Errorf("hop plugin %s: %w", p.name, err),
+				},
 			}),
 		)
 	}
@@ -156,7 +168,10 @@ func (p *httpPlugin) Select(ctx context.Context, opts ...hop.SelectOption) *chai
 		p.log.Error(resp.Status)
 		return chain.NewNode(p.name, p.url,
 			chain.TransportNodeOption(&failingTransport{
-				err: fmt.Errorf("hop plugin %s: %s", p.name, resp.Status),
+				err: &statusError{
+					statusCode: 451,
+					err:        fmt.Errorf("hop plugin %s: %s", p.name, resp.Status),
+				},
 			}),
 		)
 	}
@@ -166,7 +181,10 @@ func (p *httpPlugin) Select(ctx context.Context, opts ...hop.SelectOption) *chai
 		p.log.Error(err)
 		return chain.NewNode(p.name, p.url,
 			chain.TransportNodeOption(&failingTransport{
-				err: fmt.Errorf("hop plugin %s: %w", p.name, err),
+				err: &statusError{
+					statusCode: 451,
+					err:        fmt.Errorf("hop plugin %s: %w", p.name, err),
+				},
 			}),
 		)
 	}
@@ -176,7 +194,10 @@ func (p *httpPlugin) Select(ctx context.Context, opts ...hop.SelectOption) *chai
 		p.log.Error(err)
 		return chain.NewNode(p.name, p.url,
 			chain.TransportNodeOption(&failingTransport{
-				err: fmt.Errorf("hop plugin %s: %w", p.name, err),
+				err: &statusError{
+					statusCode: 451,
+					err:        fmt.Errorf("hop plugin %s: %w", p.name, err),
+				},
 			}),
 		)
 	}

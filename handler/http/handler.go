@@ -347,6 +347,11 @@ func (h *httpHandler) handleRequest(ctx context.Context, conn net.Conn, req *htt
 
 	if err != nil {
 		resp.StatusCode = http.StatusServiceUnavailable
+		if sc, ok := err.(interface{ StatusCode() int }); ok {
+			if code := sc.StatusCode(); code >= http.StatusContinue && code < 600 {
+				resp.StatusCode = code
+			}
+		}
 
 		if log.IsLevelEnabled(logger.TraceLevel) {
 			dump, _ := httputil.DumpResponse(resp, false)
@@ -581,6 +586,12 @@ func (h *httpHandler) proxyRoundTrip(ctx context.Context, rw io.ReadWriteCloser,
 	}
 
 	if err != nil {
+		if sc, ok := err.(interface{ StatusCode() int }); ok {
+			if code := sc.StatusCode(); code >= http.StatusContinue && code < 600 {
+				res.StatusCode = code
+				ro.HTTP.StatusCode = res.StatusCode
+			}
+		}
 		res.Write(rw)
 		return
 	}

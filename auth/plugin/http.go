@@ -5,12 +5,21 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-gost/core/auth"
 	"github.com/go-gost/core/logger"
 	xctx "github.com/go-gost/x/ctx"
 	"github.com/go-gost/x/internal/plugin"
 )
+
+type httpAuthCacheEntry struct {
+	id      string
+	ok      bool
+	expires time.Time
+}
 
 type httpPluginRequest struct {
 	Service  string `json:"service"`
@@ -29,6 +38,8 @@ type httpPlugin struct {
 	client *http.Client
 	header http.Header
 	log    logger.Logger
+	mu     sync.Mutex
+	cache  map[string]httpAuthCacheEntry
 }
 
 // NewHTTPPlugin creates an Authenticator plugin based on HTTP.
@@ -46,12 +57,29 @@ func NewHTTPPlugin(name string, url string, opts ...plugin.Option) auth.Authenti
 			"kind":   "auther",
 			"auther": name,
 		}),
+		cache: make(map[string]httpAuthCacheEntry),
 	}
 }
 
 func (p *httpPlugin) Authenticate(ctx context.Context, user, password string, opts ...auth.Option) (id string, ok bool) {
 	if p.client == nil {
 		return
+	}
+
+	username := user
+	if s, _, found := strings.Cut(user, "-"); found {
+		username = s
+	}
+	if username != "" {
+		p.mu.Lock()
+		if ent, ok := p.cache[username]; ok {
+			if time.Now().Before(ent.expires) {
+				p.mu.Unlock()
+				return ent.id, ent.ok
+			}
+			delete(p.cache, username)
+		}
+		p.mu.Unlock()
 	}
 
 	var options auth.Options
@@ -66,7 +94,7 @@ func (p *httpPlugin) Authenticate(ctx context.Context, user, password string, op
 
 	rb := httpPluginRequest{
 		Service:  options.Service,
-		Username: user,
+		Username: username,
 		Password: password,
 		Client:   clientAddr,
 	}
@@ -97,6 +125,15 @@ func (p *httpPlugin) Authenticate(ctx context.Context, user, password string, op
 	res := httpPluginResponse{}
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return
+	}
+	if username != "" && res.OK {
+		p.mu.Lock()
+		p.cache[username] = httpAuthCacheEntry{
+			id:      res.ID,
+			ok:      res.OK,
+			expires: time.Now().Add(5 * time.Minute),
+		}
+		p.mu.Unlock()
 	}
 	return res.ID, res.OK
 }

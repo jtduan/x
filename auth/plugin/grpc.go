@@ -3,6 +3,9 @@ package auth
 import (
 	"context"
 	"io"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-gost/core/auth"
 	"github.com/go-gost/core/logger"
@@ -12,10 +15,18 @@ import (
 	"google.golang.org/grpc"
 )
 
+type grpcAuthCacheEntry struct {
+	id      string
+	ok      bool
+	expires time.Time
+}
+
 type grpcPlugin struct {
 	conn   grpc.ClientConnInterface
 	client proto.AuthenticatorClient
 	log    logger.Logger
+	mu     sync.Mutex
+	cache  map[string]grpcAuthCacheEntry
 }
 
 // NewGRPCPlugin creates an Authenticator plugin based on gRPC.
@@ -37,6 +48,7 @@ func NewGRPCPlugin(name string, addr string, opts ...plugin.Option) auth.Authent
 	p := &grpcPlugin{
 		conn: conn,
 		log:  log,
+		cache: make(map[string]grpcAuthCacheEntry),
 	}
 
 	if conn != nil {
@@ -51,6 +63,22 @@ func (p *grpcPlugin) Authenticate(ctx context.Context, user, password string, op
 		return "", false
 	}
 
+	username := user
+	if s, _, found := strings.Cut(user, "-"); found {
+		username = s
+	}
+	if username != "" {
+		p.mu.Lock()
+		if ent, ok := p.cache[username]; ok {
+			if time.Now().Before(ent.expires) {
+				p.mu.Unlock()
+				return ent.id, ent.ok
+			}
+			delete(p.cache, username)
+		}
+		p.mu.Unlock()
+	}
+
 	var options auth.Options
 	for _, opt := range opts {
 		opt(&options)
@@ -63,13 +91,22 @@ func (p *grpcPlugin) Authenticate(ctx context.Context, user, password string, op
 	r, err := p.client.Authenticate(ctx,
 		&proto.AuthenticateRequest{
 			Service:  options.Service,
-			Username: user,
+			Username: username,
 			Password: password,
 			Client:   clientAddr,
 		})
 	if err != nil {
 		p.log.Error(err)
 		return "", false
+	}
+	if username != "" && r.Ok {
+		p.mu.Lock()
+		p.cache[username] = grpcAuthCacheEntry{
+			id:      r.Id,
+			ok:      r.Ok,
+			expires: time.Now().Add(5 * time.Minute),
+		}
+		p.mu.Unlock()
 	}
 	return r.Id, r.Ok
 }
