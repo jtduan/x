@@ -63,18 +63,19 @@ func (p *grpcPlugin) Authenticate(ctx context.Context, user, password string, op
 		return "", false
 	}
 
-	username := user
+	cacheKey := user
 	if s, _, found := strings.Cut(user, "-"); found {
-		username = s
+		cacheKey = s
 	}
-	if username != "" {
+	username := user
+	if cacheKey != "" {
 		p.mu.Lock()
-		if ent, ok := p.cache[username]; ok {
+		if ent, ok := p.cache[cacheKey]; ok {
 			if time.Now().Before(ent.expires) {
 				p.mu.Unlock()
-				return ent.id, ent.ok
+				return username, ent.ok
 			}
-			delete(p.cache, username)
+			delete(p.cache, cacheKey)
 		}
 		p.mu.Unlock()
 	}
@@ -99,9 +100,9 @@ func (p *grpcPlugin) Authenticate(ctx context.Context, user, password string, op
 		p.log.Error(err)
 		return "", false
 	}
-	if username != "" && r.Ok {
+	if cacheKey != "" && r.Ok {
 		p.mu.Lock()
-		p.cache[username] = grpcAuthCacheEntry{
+		p.cache[cacheKey] = grpcAuthCacheEntry{
 			id:      r.Id,
 			ok:      r.Ok,
 			expires: time.Now().Add(5 * time.Minute),

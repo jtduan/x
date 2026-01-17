@@ -66,18 +66,19 @@ func (p *httpPlugin) Authenticate(ctx context.Context, user, password string, op
 		return
 	}
 
-	username := user
+	cacheKey := user
 	if s, _, found := strings.Cut(user, "-"); found {
-		username = s
+		cacheKey = s
 	}
-	if username != "" {
+	username := user
+	if cacheKey != "" {
 		p.mu.Lock()
-		if ent, ok := p.cache[username]; ok {
+		if ent, ok := p.cache[cacheKey]; ok {
 			if time.Now().Before(ent.expires) {
 				p.mu.Unlock()
-				return ent.id, ent.ok
+				return username, ent.ok
 			}
-			delete(p.cache, username)
+			delete(p.cache, cacheKey)
 		}
 		p.mu.Unlock()
 	}
@@ -126,9 +127,9 @@ func (p *httpPlugin) Authenticate(ctx context.Context, user, password string, op
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return
 	}
-	if username != "" && res.OK {
+	if cacheKey != "" && res.OK {
 		p.mu.Lock()
-		p.cache[username] = httpAuthCacheEntry{
+		p.cache[cacheKey] = httpAuthCacheEntry{
 			id:      res.ID,
 			ok:      res.OK,
 			expires: time.Now().Add(5 * time.Minute),
