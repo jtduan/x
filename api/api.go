@@ -156,4 +156,9 @@ func Register(r *gin.Engine, opts *Options) {
 	config.POST("/rlimiters", createRateLimiter)
 	config.PUT("/rlimiters/:limiter", updateRateLimiter)
 	config.DELETE("/rlimiters/:limiter", deleteRateLimiter)
+
+	monitor := router.Group("/monitor")
+	monitor.Use(mwBasicAuth(opts.Auther))
+	monitor.GET("/series", getMonitorSeries)
+	monitor.GET("/ui", getMonitorUI)
 }
