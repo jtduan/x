@@ -17,6 +17,8 @@ import (
 
 type grpcAuthCacheEntry struct {
 	id      string
+	user    string
+	pass    string
 	ok      bool
 	expires time.Time
 }
@@ -72,14 +74,17 @@ func (p *grpcPlugin) Authenticate(ctx context.Context, user, password string, op
 		p.mu.Lock()
 		if ent, ok := p.cache[cacheKey]; ok {
 			if time.Now().Before(ent.expires) {
+				if ent.user == username && ent.pass == password {
+					p.mu.Unlock()
+					return username, ent.ok
+				}
 				p.mu.Unlock()
-				return username, ent.ok
+				return username, false
 			}
 			delete(p.cache, cacheKey)
 		}
 		p.mu.Unlock()
 	}
-
 	var options auth.Options
 	for _, opt := range opts {
 		opt(&options)
@@ -104,12 +109,14 @@ func (p *grpcPlugin) Authenticate(ctx context.Context, user, password string, op
 		p.mu.Lock()
 		p.cache[cacheKey] = grpcAuthCacheEntry{
 			id:      r.Id,
+			user:    username,
+			pass:    password,
 			ok:      r.Ok,
 			expires: time.Now().Add(5 * time.Minute),
 		}
 		p.mu.Unlock()
 	}
-	return r.Id, r.Ok
+	return username, r.Ok
 }
 
 func (p *grpcPlugin) Close() error {
