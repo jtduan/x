@@ -160,5 +160,6 @@ func Register(r *gin.Engine, opts *Options) {
 	monitor := router.Group("/monitor")
 	monitor.Use(mwBasicAuth(opts.Auther))
 	monitor.GET("/series", getMonitorSeries)
+	monitor.GET("/history", getMonitorHistory)
 	monitor.GET("/ui", getMonitorUI)
 }

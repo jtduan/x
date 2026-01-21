@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/asaskevich/govalidator"
+	"github.com/go-gost/x/api"
 	"github.com/go-gost/core/auth"
 	"github.com/go-gost/core/bypass"
 	"github.com/go-gost/core/handler"
@@ -266,6 +267,7 @@ func (h *httpHandler) handleRequest(ctx context.Context, conn net.Conn, req *htt
 			Header:        req.Header.Clone(),
 		},
 	}
+	api.RecordProxyAccess(conn.LocalAddr().String(), req.Method, req.Host, req.RequestURI)
 	defer func() {
 		ro.HTTP.StatusCode = resp.StatusCode
 		ro.HTTP.Response.Header = resp.Header

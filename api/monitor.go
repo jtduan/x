@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -264,8 +266,108 @@ func getMonitorUI(c *gin.Context) {
 	io.WriteString(c.Writer, monitorHTML)
 }
 
-const monitorHTML = `<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>gost monitor</title><style>html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}#app{height:100%;display:flex;flex-direction:column}header{padding:10px 14px;border-bottom:1px solid #eee;display:flex;gap:12px;align-items:center}main{flex:1;min-height:0;overflow:auto;padding:10px;display:grid;grid-template-columns:1fr;gap:10px}.card{border:1px solid #eee;border-radius:8px;padding:8px;min-height:240px}.card h3{margin:0 0 6px 0;font-size:14px;font-weight:600;color:#111}.chart{height:220px}</style></head><body><div id='app'><header><strong>gost monitor (multi-charts v2)</strong><span id='status'>loading...</span></header><main><div class='card'><h3>CPU (%)</h3><div id='chartCpu' class='chart'></div></div><div class='card'><h3>RSS (bytes)</h3><div id='chartRss' class='chart'></div></div><div class='card'><h3>HeapAlloc (bytes)</h3><div id='chartHeap' class='chart'></div></div><div class='card'><h3>RX (bytes/s)</h3><div id='chartRx' class='chart'></div></div><div class='card'><h3>TX (bytes/s)</h3><div id='chartTx' class='chart'></div></div><div class='card'><h3>Traffic total (RX+TX cumulative)</h3><div id='chartTrafficTotal' class='chart'></div></div><div class='card'><h3>TCP EST :8000 (count)</h3><div id='chartConn8000' class='chart'></div></div></main></div><script src='https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js'></script><script>(function(){const statusEl=document.getElementById('status');function fmtBytes(v){if(v<1024)return v.toFixed(0)+' B';if(v<1024*1024)return (v/1024).toFixed(1)+' KB';if(v<1024*1024*1024)return (v/1024/1024).toFixed(1)+' MB';return (v/1024/1024/1024).toFixed(2)+' GB';}function fmtBps(v){return fmtBytes(v)+'/s';}function makeChart(id){const el=document.getElementById(id);if(!el)return null;return echarts.init(el);}const charts={cpu:makeChart('chartCpu'),rss:makeChart('chartRss'),heap:makeChart('chartHeap'),rx:makeChart('chartRx'),tx:makeChart('chartTx'),trafficTotal:makeChart('chartTrafficTotal'),conn8000:makeChart('chartConn8000')};function setLine(chart,title,ts,vals,yFmt){if(!chart)return;chart.setOption({tooltip:{trigger:'axis',valueFormatter:yFmt||((v)=>v)},grid:{left:50,right:20,top:10,bottom:30},xAxis:{type:'time'},yAxis:{type:'value',axisLabel:{formatter:yFmt?((v)=>yFmt(v)):undefined}},series:[{name:title,type:'line',showSymbol:false,data:ts.map((t,i)=>[t,vals[i]])}]});}
-async function load(){try{const limit=300;const res=await fetch('series?limit='+limit,{cache:'no-store'});const j=await res.json();const data=(j&&j.data)||[];statusEl.textContent='points: '+data.length+' (limit '+limit+')';const ts=[];const cpu=[];const rss=[];const heap=[];const rx=[];const tx=[];const trafficTotal=[];const c8000=[];for(let i=0;i<data.length;i++){const x=data[i]||{};ts.push((x.ts||0)*1000);cpu.push(x.cpuPercent||0);rss.push(x.rssBytes||0);heap.push(x.heapAlloc||0);rx.push(x.rxBytesPerS||0);tx.push(x.txBytesPerS||0);trafficTotal.push(x.trafficBytesTotal||0);c8000.push(x.conn8000Est||0);}setLine(charts.cpu,'CPU%',ts,cpu);setLine(charts.rss,'RSS',ts,rss,fmtBytes);setLine(charts.heap,'HeapAlloc',ts,heap,fmtBytes);setLine(charts.rx,'RX',ts,rx,fmtBps);setLine(charts.tx,'TX',ts,tx,fmtBps);setLine(charts.trafficTotal,'Traffic total',ts,trafficTotal,fmtBytes);setLine(charts.conn8000,':8000 EST',ts,c8000);}catch(e){statusEl.textContent='error';}}load();setInterval(load,30000);window.addEventListener('resize',()=>{Object.keys(charts).forEach(k=>{if(charts[k])charts[k].resize();});});})();</script></body></html>`
+type monitorAccessEntry struct {
+	TS     int64  `json:"ts"`
+	Method string `json:"method"`
+	Host   string `json:"host"`
+	URI    string `json:"uri"`
+}
+
+type monitorAccessStore struct {
+	mu       sync.RWMutex
+	capacity int
+	next     int
+	filled   bool
+	entries  []monitorAccessEntry
+}
+
+func newMonitorAccessStore(capacity int) *monitorAccessStore {
+	if capacity <= 0 {
+		capacity = 200
+	}
+	return &monitorAccessStore{
+		capacity: capacity,
+		entries:  make([]monitorAccessEntry, capacity),
+	}
+}
+
+func (s *monitorAccessStore) add(e monitorAccessEntry) {
+	s.mu.Lock()
+	s.entries[s.next] = e
+	s.next = (s.next + 1) % s.capacity
+	if s.next == 0 {
+		s.filled = true
+	}
+	s.mu.Unlock()
+}
+
+func (s *monitorAccessStore) list(limit int) []monitorAccessEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []monitorAccessEntry
+	if !s.filled {
+		out = append(out, s.entries[:s.next]...)
+	} else {
+		out = make([]monitorAccessEntry, 0, s.capacity)
+		out = append(out, s.entries[s.next:]...)
+		out = append(out, s.entries[:s.next]...)
+	}
+
+	if limit > 0 && len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out
+}
+
+var monitorAccess = newMonitorAccessStore(200)
+
+func RecordProxyAccess(localAddr string, method string, host string, uri string) {
+	_, port, err := net.SplitHostPort(localAddr)
+	if err != nil || port != "8000" {
+		return
+	}
+
+	cleanHost := strings.TrimSpace(host)
+	if h, _, err := net.SplitHostPort(cleanHost); err == nil {
+		cleanHost = h
+	}
+	cleanHost = strings.Trim(cleanHost, "[]")
+
+	cleanURI := strings.TrimSpace(uri)
+	if u, err := url.Parse(cleanURI); err == nil && u != nil && u.Host != "" {
+		cleanURI = u.RequestURI()
+		if cleanHost == "" {
+			cleanHost = u.Hostname()
+		}
+	}
+
+	monitorAccess.add(monitorAccessEntry{
+		TS:     time.Now().Unix(),
+		Method: method,
+		Host:   cleanHost,
+		URI:    cleanURI,
+	})
+}
+
+func getMonitorHistory(c *gin.Context) {
+	limit := 80
+	if s := c.Query("limit"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	c.JSON(http.StatusOK, Response{Data: monitorAccess.list(limit)})
+}
+
+const monitorHTML = `<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>gost monitor</title><style>html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}#app{height:100%;display:flex;flex-direction:column}header{padding:10px 14px;border-bottom:1px solid #eee;display:flex;gap:12px;align-items:center}main{flex:1;min-height:0;overflow:auto;padding:10px;display:grid;grid-template-columns:1fr;gap:10px}.card{border:1px solid #eee;border-radius:8px;padding:8px;min-height:240px}.card h3{margin:0 0 6px 0;font-size:14px;font-weight:600;color:#111}.chart{height:220px}.list{height:220px;overflow:auto}.row{display:flex;gap:10px;padding:4px 0;border-bottom:1px solid #f2f2f2;font-size:13px}.ts{color:#666;white-space:nowrap;min-width:140px}.m{font-weight:600;white-space:nowrap;min-width:80px}.u{word-break:break-all}</style></head><body><div id='app'><header><strong>gost monitor (multi-charts v2)</strong><span id='status'>loading...</span></header><main><div class='card'><h3>Access history (:8000)</h3><div id='history' class='list'></div></div><div class='card'><h3>CPU (%)</h3><div id='chartCpu' class='chart'></div></div><div class='card'><h3>RSS (bytes)</h3><div id='chartRss' class='chart'></div></div><div class='card'><h3>RX (bytes/s)</h3><div id='chartRx' class='chart'></div></div><div class='card'><h3>TX (bytes/s)</h3><div id='chartTx' class='chart'></div></div><div class='card'><h3>Traffic total (RX+TX cumulative)</h3><div id='chartTrafficTotal' class='chart'></div></div><div class='card'><h3>TCP EST :8000 (count)</h3><div id='chartConn8000' class='chart'></div></div></main></div><script src='https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js'></script><script>(function(){const statusEl=document.getElementById('status');const historyEl=document.getElementById('history');function fmtBytes(v){if(v<1024)return v.toFixed(0)+' B';if(v<1024*1024)return (v/1024).toFixed(1)+' KB';if(v<1024*1024*1024)return (v/1024/1024).toFixed(1)+' MB';return (v/1024/1024/1024).toFixed(2)+' GB';}function fmtBps(v){return fmtBytes(v)+'/s';}function makeChart(id){const el=document.getElementById(id);if(!el)return null;return echarts.init(el);}const charts={cpu:makeChart('chartCpu'),rss:makeChart('chartRss'),rx:makeChart('chartRx'),tx:makeChart('chartTx'),trafficTotal:makeChart('chartTrafficTotal'),conn8000:makeChart('chartConn8000')};function setLine(chart,title,ts,vals,yFmt){if(!chart)return;chart.setOption({tooltip:{trigger:'axis',valueFormatter:yFmt||((v)=>v)},grid:{left:50,right:20,top:10,bottom:30},xAxis:{type:'time'},yAxis:{type:'value',axisLabel:{formatter:yFmt?((v)=>yFmt(v)):undefined}},series:[{name:title,type:'line',showSymbol:false,data:ts.map((t,i)=>[t,vals[i]])}]});}
+function fmtTS(sec){const d=new Date((sec||0)*1000);const p=(n)=>String(n).padStart(2,'0');return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}
+function renderHistory(items){if(!historyEl)return;historyEl.innerHTML='';for(let i=0;i<items.length;i++){const x=items[i]||{};const host=(x.host||'');const method=(x.method||'');const uri=(x.uri||'');let text='';if(method==='CONNECT'){text='CONNECT: '+host;}else{let path=uri||'';if(path.startsWith('http://')||path.startsWith('https://')){try{const u=new URL(path);path=u.pathname+(u.search||'');}catch(e){}}
+text=host+(path||'');}
+const row=document.createElement('div');row.className='row';const ts=document.createElement('div');ts.className='ts';ts.textContent=fmtTS(x.ts||0);const m=document.createElement('div');m.className='m';m.textContent=method;const u=document.createElement('div');u.className='u';u.textContent=text;row.appendChild(ts);row.appendChild(m);row.appendChild(u);historyEl.appendChild(row);}if(items.length===0){historyEl.textContent='(empty)';}}
+async function load(){try{const limit=300;const res=await fetch('series?limit='+limit,{cache:'no-store'});const j=await res.json();const data=(j&&j.data)||[];statusEl.textContent='points: '+data.length+' (limit '+limit+')';const ts=[];const cpu=[];const rss=[];const rx=[];const tx=[];const trafficTotal=[];const c8000=[];for(let i=0;i<data.length;i++){const x=data[i]||{};ts.push((x.ts||0)*1000);cpu.push(x.cpuPercent||0);rss.push(x.rssBytes||0);rx.push(x.rxBytesPerS||0);tx.push(x.txBytesPerS||0);trafficTotal.push(x.trafficBytesTotal||0);c8000.push(x.conn8000Est||0);}setLine(charts.cpu,'CPU%',ts,cpu);setLine(charts.rss,'RSS',ts,rss,fmtBytes);setLine(charts.rx,'RX',ts,rx,fmtBps);setLine(charts.tx,'TX',ts,tx,fmtBps);setLine(charts.trafficTotal,'Traffic total',ts,trafficTotal,fmtBytes);setLine(charts.conn8000,':8000 EST',ts,c8000);
+		const hres=await fetch('history?limit=80',{cache:'no-store'});const hj=await hres.json();renderHistory((hj&&hj.data)||[]);
+	}catch(e){statusEl.textContent='error';}}load();setInterval(load,30000);window.addEventListener('resize',()=>{Object.keys(charts).forEach(k=>{if(charts[k])charts[k].resize();});});})();</script></body></html>`
 
 func sampleGostTransferTotals() (inTotal, outTotal float64) {
 	mfs, err := prometheus.DefaultGatherer.Gather()
