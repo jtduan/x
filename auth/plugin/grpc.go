@@ -64,6 +64,9 @@ func (p *grpcPlugin) Authenticate(ctx context.Context, user, password string, op
 	if p.client == nil {
 		return "", false
 	}
+	if user == "" {
+		return "", false
+	}
 
 	cacheKey := user
 	if s, _, found := strings.Cut(user, "-"); found {
