@@ -233,6 +233,9 @@ func (ep *entrypoint) handleHTTP(ctx context.Context, conn net.Conn, ro *xrecord
 	ro.Time = time.Time{}
 
 	if err := ep.httpRoundTrip(ctx, xio.NewReadWriteCloser(br, conn, conn), req, ro, &pStats, log); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+			return nil
+		}
 		log.Error(err)
 		return err
 	}
