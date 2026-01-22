@@ -9,6 +9,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/go-gost/x/api"
 	"github.com/go-gost/core/bypass"
 	"github.com/go-gost/core/limiter"
 	"github.com/go-gost/core/logger"
@@ -76,6 +77,7 @@ func (h *socks5Handler) handleConnect(ctx context.Context, conn net.Conn, networ
 		resp.Write(conn)
 		return err
 	}
+	cc = api.WrapDownstreamConn(cc)
 	defer cc.Close()
 
 	log = log.WithFields(map[string]any{"src": cc.LocalAddr().String(), "dst": cc.RemoteAddr().String()})

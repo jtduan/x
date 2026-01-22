@@ -9,6 +9,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/go-gost/x/api"
 	"github.com/go-gost/core/auth"
 	"github.com/go-gost/core/bypass"
 	"github.com/go-gost/core/handler"
@@ -258,6 +259,7 @@ func (h *socks4Handler) handleConnect(ctx context.Context, conn net.Conn, req *g
 		resp.Write(conn)
 		return err
 	}
+	cc = api.WrapDownstreamConn(cc)
 	defer cc.Close()
 
 	log = log.WithFields(map[string]any{"src": cc.LocalAddr().String(), "dst": cc.RemoteAddr().String()})

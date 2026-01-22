@@ -267,7 +267,6 @@ func (h *httpHandler) handleRequest(ctx context.Context, conn net.Conn, req *htt
 			Header:        req.Header.Clone(),
 		},
 	}
-	api.RecordProxyAccess(conn.LocalAddr().String(), req.Method, req.Host, req.RequestURI)
 	defer func() {
 		ro.HTTP.StatusCode = resp.StatusCode
 		ro.HTTP.Response.Header = resp.Header
@@ -288,6 +287,11 @@ func (h *httpHandler) handleRequest(ctx context.Context, conn net.Conn, req *htt
 	clientID, ok := h.authenticate(ctx, conn, req, resp, log)
 	if !ok {
 		return errors.New("authentication failed")
+	}
+	// Only record successful (authenticated) accesses.
+	// For CONNECT, record after downstream connection is established.
+	if req.Method != http.MethodConnect {
+		api.RecordProxyAccess(conn.LocalAddr().String(), req.Method, req.Host, req.RequestURI)
 	}
 
 	log = log.WithFields(map[string]any{"clientID": clientID})
@@ -362,7 +366,10 @@ func (h *httpHandler) handleRequest(ctx context.Context, conn net.Conn, req *htt
 		resp.Write(conn)
 		return err
 	}
+	cc = api.WrapDownstreamConn(cc)
 	defer cc.Close()
+	// CONNECT: record only after downstream connection is established.
+	api.RecordProxyAccess(conn.LocalAddr().String(), req.Method, addr, "")
 
 	log = log.WithFields(map[string]any{"src": cc.LocalAddr().String(), "dst": cc.RemoteAddr().String()})
 	ro.SrcAddr = cc.LocalAddr().String()

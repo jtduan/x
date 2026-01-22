@@ -4,37 +4,25 @@ import (
 	"bufio"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
-
-	xmetrics "github.com/go-gost/x/metrics"
 )
 
 type monitorSample struct {
-	TS           int64   `json:"ts"`
-	CPUPercent   float64 `json:"cpuPercent"`
-	RSSBytes     uint64  `json:"rssBytes"`
-	HeapAlloc    uint64  `json:"heapAlloc"`
-	RxBytesPerS  float64 `json:"rxBytesPerS"`
-	TxBytesPerS  float64 `json:"txBytesPerS"`
-	RxBytesTotal float64 `json:"rxBytesTotal"`
-	TxBytesTotal float64 `json:"txBytesTotal"`
-	TrafficTotal float64 `json:"trafficBytesTotal"`
-	Conn8000Est  int     `json:"conn8000Est"`
+	TS                int64  `json:"ts"`
+	Conn8000Est       int    `json:"conn8000Est"`
+	DownstreamRxTotal uint64 `json:"downstreamRxTotal"`
 }
 
 type monitorStore struct {
@@ -53,13 +41,6 @@ type monitor struct {
 	capacity int
 
 	store monitorStore
-
-	prevProcTotal uint64
-	prevSysTotal  uint64
-
-	prevInBytes  float64
-	prevOutBytes float64
-	prevTrafficTS time.Time
 
 	stopOnce sync.Once
 	stopCh   chan struct{}
@@ -83,8 +64,6 @@ func getMonitor() *monitor {
 			Capacity:        m.capacity,
 			Samples:         make([]monitorSample, m.capacity),
 		}
-
-		xmetrics.Enable(true)
 
 		m.load()
 		go m.loop()
@@ -124,27 +103,13 @@ func (m *monitor) loop() {
 }
 
 func (m *monitor) sampleAndStore(now time.Time) {
-	cpu, _ := sampleProcessCPUPercent(&m.prevProcTotal, &m.prevSysTotal)
-	rss := sampleRSSBytes()
-
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-
-	rxBps, txBps := m.sampleTraffic(now)
-	inTotal, outTotal := sampleGostTransferTotals()
-	conn := countTCPConnectionsEstablished(8000)
+	conn := countTCPConnectionsEstablishedExcludeLocalPorts(8000, 8001, 18080)
+	dsRxTotal := downstreamRxTotal.Load()
 
 	s := monitorSample{
 		TS:          now.Unix(),
-		CPUPercent:  cpu,
-		RSSBytes:    rss,
-		HeapAlloc:   ms.HeapAlloc,
-		RxBytesPerS: rxBps,
-		TxBytesPerS: txBps,
-		RxBytesTotal: inTotal,
-		TxBytesTotal: outTotal,
-		TrafficTotal: inTotal + outTotal,
 		Conn8000Est: conn,
+		DownstreamRxTotal: dsRxTotal,
 	}
 
 	m.mu.Lock()
@@ -156,40 +121,6 @@ func (m *monitor) sampleAndStore(now time.Time) {
 	m.mu.Unlock()
 
 	m.save()
-}
-
-func (m *monitor) sampleTraffic(now time.Time) (rxBps, txBps float64) {
-	inTotal, outTotal := sampleGostTransferTotals()
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.prevTrafficTS.IsZero() {
-		m.prevInBytes = inTotal
-		m.prevOutBytes = outTotal
-		m.prevTrafficTS = now
-		return 0, 0
-	}
-
-	dt := now.Sub(m.prevTrafficTS).Seconds()
-	if dt <= 0 {
-		return 0, 0
-	}
-
-	rxBps = (inTotal - m.prevInBytes) / dt
-	txBps = (outTotal - m.prevOutBytes) / dt
-	if rxBps < 0 {
-		rxBps = 0
-	}
-	if txBps < 0 {
-		txBps = 0
-	}
-
-	m.prevInBytes = inTotal
-	m.prevOutBytes = outTotal
-	m.prevTrafficTS = now
-
-	return rxBps, txBps
 }
 
 func (m *monitor) series() []monitorSample {
@@ -226,6 +157,35 @@ func (m *monitor) load() {
 	m.mu.Lock()
 	m.store = st
 	m.mu.Unlock()
+	// Restore downstream RX counter from persisted samples (keep accumulating).
+	series := m.series()
+	if len(series) > 0 {
+		last := series[len(series)-1]
+		downstreamRxTotal.Store(last.DownstreamRxTotal)
+	}
+}
+
+var downstreamRxTotal atomic.Uint64
+
+type downstreamCountConn struct {
+	net.Conn
+}
+
+func (c *downstreamCountConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		downstreamRxTotal.Add(uint64(n))
+	}
+	return n, err
+}
+
+// WrapDownstreamConn wraps a downstream connection so that bytes read from it
+// (downstream -> gost direction) are accumulated for monitor.
+func WrapDownstreamConn(conn net.Conn) net.Conn {
+	if conn == nil {
+		return conn
+	}
+	return &downstreamCountConn{Conn: conn}
 }
 
 func (m *monitor) save() {
@@ -263,7 +223,7 @@ func getMonitorSeries(c *gin.Context) {
 
 func getMonitorUI(c *gin.Context) {
 	c.Header("Content-Type", "text/html; charset=utf-8")
-	io.WriteString(c.Writer, monitorHTML)
+	io.WriteString(c.Writer, monitorHTMLLite)
 }
 
 type monitorAccessEntry struct {
@@ -376,157 +336,16 @@ func getMonitorHistory(c *gin.Context) {
 	c.String(http.StatusOK, b.String())
 }
 
-const monitorHTML = `<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>gost monitor</title><style>html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}#app{height:100%;display:flex;flex-direction:column}header{padding:10px 14px;border-bottom:1px solid #eee;display:flex;gap:12px;align-items:center}main{flex:1;min-height:0;overflow:auto;padding:10px;display:grid;grid-template-columns:1fr;gap:10px}.card{border:1px solid #eee;border-radius:8px;padding:8px;min-height:240px}.card h3{margin:0 0 6px 0;font-size:14px;font-weight:600;color:#111}.chart{height:220px}.list{height:220px;overflow:auto}.row{display:flex;gap:10px;padding:4px 0;border-bottom:1px solid #f2f2f2;font-size:13px}.ts{color:#666;white-space:nowrap;min-width:140px}.m{font-weight:600;white-space:nowrap;min-width:80px}.u{word-break:break-all}</style></head><body><div id='app'><header><strong>gost monitor (multi-charts v2)</strong><span id='status'>loading...</span></header><main><div class='card'><h3>Access history (:8000)</h3><div id='history' class='list'></div></div><div class='card'><h3>CPU (%)</h3><div id='chartCpu' class='chart'></div></div><div class='card'><h3>RSS (bytes)</h3><div id='chartRss' class='chart'></div></div><div class='card'><h3>RX (bytes/s)</h3><div id='chartRx' class='chart'></div></div><div class='card'><h3>TX (bytes/s)</h3><div id='chartTx' class='chart'></div></div><div class='card'><h3>Traffic total (RX+TX cumulative)</h3><div id='chartTrafficTotal' class='chart'></div></div><div class='card'><h3>TCP EST :8000 (count)</h3><div id='chartConn8000' class='chart'></div></div></main></div><script src='https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js'></script><script>(function(){const statusEl=document.getElementById('status');const historyEl=document.getElementById('history');if(historyEl)historyEl.style.whiteSpace='pre';function fmtBytes(v){if(v<1024)return v.toFixed(0)+' B';if(v<1024*1024)return (v/1024).toFixed(1)+' KB';if(v<1024*1024*1024)return (v/1024/1024).toFixed(1)+' MB';return (v/1024/1024/1024).toFixed(2)+' GB';}function fmtBps(v){return fmtBytes(v)+'/s';}function makeChart(id){const el=document.getElementById(id);if(!el)return null;return echarts.init(el);}const charts={cpu:makeChart('chartCpu'),rss:makeChart('chartRss'),rx:makeChart('chartRx'),tx:makeChart('chartTx'),trafficTotal:makeChart('chartTrafficTotal'),conn8000:makeChart('chartConn8000')};function setLine(chart,title,ts,vals,yFmt){if(!chart)return;chart.setOption({tooltip:{trigger:'axis',valueFormatter:yFmt||((v)=>v)},grid:{left:50,right:20,top:10,bottom:30},xAxis:{type:'time'},yAxis:{type:'value',axisLabel:{formatter:yFmt?((v)=>yFmt(v)):undefined}},series:[{name:title,type:'line',showSymbol:false,data:ts.map((t,i)=>[t,vals[i]])}]});}
-function fmtTS(sec){const d=new Date((sec||0)*1000);const p=(n)=>String(n).padStart(2,'0');return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}
-function renderHistory(items){if(!historyEl)return;historyEl.innerHTML='';for(let i=0;i<items.length;i++){const x=items[i]||{};const host=(x.host||'');const method=(x.method||'');const uri=(x.uri||'');let text='';if(method==='CONNECT'){text='CONNECT: '+host;}else{let path=uri||'';if(path.startsWith('http://')||path.startsWith('https://')){try{const u=new URL(path);path=u.pathname+(u.search||'');}catch(e){}}
-text=host+(path||'');}
-const row=document.createElement('div');row.className='row';const ts=document.createElement('div');ts.className='ts';ts.textContent=fmtTS(x.ts||0);const m=document.createElement('div');m.className='m';m.textContent=method;const u=document.createElement('div');u.className='u';u.textContent=text;row.appendChild(ts);row.appendChild(m);row.appendChild(u);historyEl.appendChild(row);}if(items.length===0){historyEl.textContent='(empty)';}}
-async function load(){try{const limit=300;const res=await fetch('series?limit='+limit,{cache:'no-store'});const j=await res.json();const data=(j&&j.data)||[];statusEl.textContent='points: '+data.length+' (limit '+limit+')';const ts=[];const cpu=[];const rss=[];const rx=[];const tx=[];const trafficTotal=[];const c8000=[];for(let i=0;i<data.length;i++){const x=data[i]||{};ts.push((x.ts||0)*1000);cpu.push(x.cpuPercent||0);rss.push(x.rssBytes||0);rx.push(x.rxBytesPerS||0);tx.push(x.txBytesPerS||0);trafficTotal.push(x.trafficBytesTotal||0);c8000.push(x.conn8000Est||0);}setLine(charts.cpu,'CPU%',ts,cpu);setLine(charts.rss,'RSS',ts,rss,fmtBytes);setLine(charts.rx,'RX',ts,rx,fmtBps);setLine(charts.tx,'TX',ts,tx,fmtBps);setLine(charts.trafficTotal,'Traffic total',ts,trafficTotal,fmtBytes);setLine(charts.conn8000,':8000 EST',ts,c8000);
-			const hres=await fetch('history?limit=80',{cache:'no-store'});const ht=await hres.text();if(historyEl){historyEl.textContent=ht||'(empty)';}
-	}catch(e){statusEl.textContent='error';}}load();setInterval(load,30000);window.addEventListener('resize',()=>{Object.keys(charts).forEach(k=>{if(charts[k])charts[k].resize();});});})();</script></body></html>`
-
-func sampleGostTransferTotals() (inTotal, outTotal float64) {
-	mfs, err := prometheus.DefaultGatherer.Gather()
-	if err != nil {
-		return 0, 0
+func countTCPConnectionsEstablishedExcludeLocalPorts(excludeLocalPorts ...int) int {
+	ex := map[string]struct{}{}
+	for _, p := range excludeLocalPorts {
+		h := strings.ToUpper(hex.EncodeToString([]byte{byte(p >> 8), byte(p)}))
+		ex[h] = struct{}{}
 	}
-	for _, mf := range mfs {
-		if mf == nil || mf.Name == nil {
-			continue
-		}
-		switch *mf.Name {
-		case "gost_service_transfer_input_bytes_total":
-			inTotal += sumMetricFamily(mf)
-		case "gost_service_transfer_output_bytes_total":
-			outTotal += sumMetricFamily(mf)
-		}
-	}
-	return
+	return countProcNetExcludeLocalPorts("/proc/net/tcp", ex) + countProcNetExcludeLocalPorts("/proc/net/tcp6", ex)
 }
 
-func sumMetricFamily(mf *dto.MetricFamily) float64 {
-	var sum float64
-	for _, m := range mf.GetMetric() {
-		if m == nil {
-			continue
-		}
-		if c := m.GetCounter(); c != nil {
-			sum += c.GetValue()
-		}
-		if g := m.GetGauge(); g != nil {
-			sum += g.GetValue()
-		}
-	}
-	return sum
-}
-
-func sampleRSSBytes() uint64 {
-	b, err := os.ReadFile("/proc/self/statm")
-	if err != nil {
-		return 0
-	}
-	fields := strings.Fields(string(b))
-	if len(fields) < 2 {
-		return 0
-	}
-	rssPages, err := strconv.ParseUint(fields[1], 10, 64)
-	if err != nil {
-		return 0
-	}
-	pageSize := uint64(os.Getpagesize())
-	return rssPages * pageSize
-}
-
-func sampleProcessCPUPercent(prevProcTotal, prevSysTotal *uint64) (float64, error) {
-	procTotal, err := readProcTotalTicks()
-	if err != nil {
-		return 0, err
-	}
-	sysTotal, err := readSystemTotalTicks()
-	if err != nil {
-		return 0, err
-	}
-
-	if *prevProcTotal == 0 || *prevSysTotal == 0 {
-		*prevProcTotal = procTotal
-		*prevSysTotal = sysTotal
-		return 0, nil
-	}
-
-	dProc := float64(procTotal - *prevProcTotal)
-	dSys := float64(sysTotal - *prevSysTotal)
-	*prevProcTotal = procTotal
-	*prevSysTotal = sysTotal
-	if dSys <= 0 {
-		return 0, nil
-	}
-	cpu := (dProc / dSys) * float64(runtime.NumCPU()) * 100
-	if cpu < 0 {
-		cpu = 0
-	}
-	return cpu, nil
-}
-
-func readProcTotalTicks() (uint64, error) {
-	b, err := os.ReadFile("/proc/self/stat")
-	if err != nil {
-		return 0, err
-	}
-	s := string(b)
-	rp := strings.LastIndexByte(s, ')')
-	if rp < 0 {
-		return 0, errors.New("invalid /proc/self/stat")
-	}
-	fields := strings.Fields(s[rp+1:])
-	if len(fields) < 15 {
-		return 0, errors.New("invalid /proc/self/stat fields")
-	}
-	utime, err := strconv.ParseUint(fields[11], 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	stime, err := strconv.ParseUint(fields[12], 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	return utime + stime, nil
-}
-
-func readSystemTotalTicks() (uint64, error) {
-	f, err := os.Open("/proc/stat")
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		line := s.Text()
-		if strings.HasPrefix(line, "cpu ") {
-			fields := strings.Fields(line)
-			var sum uint64
-			for i := 1; i < len(fields); i++ {
-				v, err := strconv.ParseUint(fields[i], 10, 64)
-				if err != nil {
-					return 0, err
-				}
-				sum += v
-			}
-			return sum, nil
-		}
-	}
-	if err := s.Err(); err != nil {
-		return 0, err
-	}
-	return 0, errors.New("cpu line not found in /proc/stat")
-}
-
-func countTCPConnectionsEstablished(port int) int {
-	hexPort := strings.ToUpper(hex.EncodeToString([]byte{byte(port >> 8), byte(port)}))
-	return countProcNet("/proc/net/tcp", hexPort) + countProcNet("/proc/net/tcp6", hexPort)
-}
-
-func countProcNet(path, hexPort string) int {
+func countProcNetExcludeLocalPorts(path string, excludeLocalPorts map[string]struct{}) int {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0
@@ -556,9 +375,12 @@ func countProcNet(path, hexPort string) int {
 			continue
 		}
 		p := strings.ToUpper(local[idx+1:])
-		if p == hexPort {
-			count++
+		if _, ok := excludeLocalPorts[p]; ok {
+			continue
 		}
+		count++
 	}
 	return count
 }
+
+const monitorHTMLLite = `<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>gost monitor</title><style>html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}#app{height:100%;display:flex;flex-direction:column}header{padding:10px 14px;border-bottom:1px solid #eee;display:flex;gap:12px;align-items:center}main{flex:1;min-height:0;overflow:auto;padding:10px;display:grid;grid-template-columns:1fr;gap:10px}.card{border:1px solid #eee;border-radius:8px;padding:8px;min-height:240px}.card h3{margin:0 0 6px 0;font-size:14px;font-weight:600;color:#111}.chart{height:220px}.list{height:220px;overflow:auto;white-space:pre;font-size:13px;line-height:1.4}</style></head><body><div id='app'><header><strong>gost monitor</strong><span id='status'>loading...</span></header><main><div class='card'><h3>History</h3><div id='history' class='list'></div></div><div class='card'><h3>TCP EST (downstream)</h3><div id='connNow' style='font-size:13px;color:#666;margin-bottom:6px'></div><div id='chartConn' class='chart'></div></div><div class='card'><h3>Downstream -> gost traffic (total)</h3><div id='rxNow' style='font-size:13px;color:#666;margin-bottom:6px'></div><div id='chartRxTotal' class='chart'></div></div><div class='card'><h3>Downstream -> gost traffic (rate)</h3><div id='rxRateNow' style='font-size:13px;color:#666;margin-bottom:6px'></div><div id='chartRxRate' class='chart'></div></div></main></div><script src='https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js'></script><script>(function(){const statusEl=document.getElementById('status');const historyEl=document.getElementById('history');const connNowEl=document.getElementById('connNow');const rxNowEl=document.getElementById('rxNow');const rxRateNowEl=document.getElementById('rxRateNow');const chartConnEl=document.getElementById('chartConn');const chartRxEl=document.getElementById('chartRxTotal');const chartRxRateEl=document.getElementById('chartRxRate');const chartConn=chartConnEl?echarts.init(chartConnEl):null;const chartRx=chartRxEl?echarts.init(chartRxEl):null;const chartRxRate=chartRxRateEl?echarts.init(chartRxRateEl):null;function fmtTS(sec){const d=new Date((sec||0)*1000);const p=(n)=>String(n).padStart(2,'0');return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}function fmtBytes(v){v=Number(v||0);if(v<1024)return v.toFixed(0)+' B';if(v<1024*1024)return (v/1024).toFixed(2)+' KB';if(v<1024*1024*1024)return (v/1024/1024).toFixed(2)+' MB';return (v/1024/1024/1024).toFixed(2)+' GB';}function fmtKBps(v){v=Number(v||0);return v.toFixed(2)+' KB/s';}function setLine(chart,ts,vals,fmt){if(!chart)return;chart.setOption({grid:{left:60,right:20,top:10,bottom:30},xAxis:{type:'category',data:ts,axisLabel:{hideOverlap:true}},yAxis:{type:'value',axisLabel:{formatter:(v)=>fmt?fmt(v):v}},series:[{type:'line',data:vals,smooth:true,showSymbol:false}]});}async function load(){try{const limit=300;const res=await fetch('series?limit='+limit,{cache:'no-store'});const j=await res.json();const data=(j&&j.data)||[];statusEl.textContent='points: '+data.length+' (limit '+limit+')';const ts=[];const tsSec=[];const conn=[];const rxTotal=[];for(let i=0;i<data.length;i++){const x=data[i]||{};ts.push(fmtTS(x.ts||0));tsSec.push(x.ts||0);conn.push(x.conn8000Est||0);rxTotal.push(x.downstreamRxTotal||0);}const rxRate=[];for(let i=0;i<rxTotal.length;i++){if(i===0){rxRate.push(0);continue;}const dt=(tsSec[i]-tsSec[i-1]);if(dt<=0){rxRate.push(0);continue;}const dr=(rxTotal[i]-rxTotal[i-1]);if(dr<0){rxRate.push(0);continue;}rxRate.push((dr/dt)/1024);}if(conn.length>0&&connNowEl){connNowEl.textContent='current: '+conn[conn.length-1];}if(rxTotal.length>0&&rxNowEl){rxNowEl.textContent='current: '+fmtBytes(rxTotal[rxTotal.length-1]);}if(rxRate.length>0&&rxRateNowEl){rxRateNowEl.textContent='current: '+fmtKBps(rxRate[rxRate.length-1]);}setLine(chartConn,ts,conn);setLine(chartRx,ts,rxTotal,fmtBytes);setLine(chartRxRate,ts,rxRate,fmtKBps);const hres=await fetch('history?limit=200',{cache:'no-store'});const ht=await hres.text();if(historyEl){historyEl.textContent=ht||'(empty)';}}catch(e){statusEl.textContent='error';}}load();setInterval(load,30000);window.addEventListener('resize',()=>{if(chartConn)chartConn.resize();if(chartRx)chartRx.resize();if(chartRxRate)chartRxRate.resize();});})();</script></body></html>`
