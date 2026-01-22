@@ -2,7 +2,6 @@ package api
 
 import (
 	"bufio"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net"
@@ -103,7 +102,7 @@ func (m *monitor) loop() {
 }
 
 func (m *monitor) sampleAndStore(now time.Time) {
-	conn := countTCPConnectionsEstablishedExcludeLocalPorts(8000, 8001, 18080)
+	conn := countTCPConnectionsEstablishedWithRemotePortRange(10000, 20000)
 	dsRxTotal := downstreamRxTotal.Load()
 
 	s := monitorSample{
@@ -336,16 +335,11 @@ func getMonitorHistory(c *gin.Context) {
 	c.String(http.StatusOK, b.String())
 }
 
-func countTCPConnectionsEstablishedExcludeLocalPorts(excludeLocalPorts ...int) int {
-	ex := map[string]struct{}{}
-	for _, p := range excludeLocalPorts {
-		h := strings.ToUpper(hex.EncodeToString([]byte{byte(p >> 8), byte(p)}))
-		ex[h] = struct{}{}
-	}
-	return countProcNetExcludeLocalPorts("/proc/net/tcp", ex) + countProcNetExcludeLocalPorts("/proc/net/tcp6", ex)
+func countTCPConnectionsEstablishedWithRemotePortRange(minRemotePort, maxRemotePort int) int {
+	return countProcNetWithRemotePortRange("/proc/net/tcp", minRemotePort, maxRemotePort) + countProcNetWithRemotePortRange("/proc/net/tcp6", minRemotePort, maxRemotePort)
 }
 
-func countProcNetExcludeLocalPorts(path string, excludeLocalPorts map[string]struct{}) int {
+func countProcNetWithRemotePortRange(path string, minRemotePort, maxRemotePort int) int {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0
@@ -365,18 +359,25 @@ func countProcNetExcludeLocalPorts(path string, excludeLocalPorts map[string]str
 		if len(fields) < 4 {
 			continue
 		}
-		local := fields[1]
+		remote := fields[2]
 		st := fields[3]
 		if st != "01" {
 			continue
 		}
-		idx := strings.LastIndex(local, ":")
-		if idx < 0 {
-			continue
-		}
-		p := strings.ToUpper(local[idx+1:])
-		if _, ok := excludeLocalPorts[p]; ok {
-			continue
+		// Filter by remote port range (next hop).
+		{
+			idx := strings.LastIndex(remote, ":")
+			if idx < 0 {
+				continue
+			}
+			rpHex := remote[idx+1:]
+			rp, err := strconv.ParseUint(rpHex, 16, 32)
+			if err != nil {
+				continue
+			}
+			if int(rp) < minRemotePort || int(rp) > maxRemotePort {
+				continue
+			}
 		}
 		count++
 	}
