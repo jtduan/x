@@ -222,7 +222,7 @@ func getMonitorSeries(c *gin.Context) {
 
 func getMonitorUI(c *gin.Context) {
 	c.Header("Content-Type", "text/html; charset=utf-8")
-	io.WriteString(c.Writer, monitorHTMLLite)
+	io.WriteString(c.Writer, monitorHTML)
 }
 
 type monitorAccessEntry struct {
@@ -384,4 +384,288 @@ func countProcNetWithRemotePortRange(path string, minRemotePort, maxRemotePort i
 	return count
 }
 
-const monitorHTMLLite = `<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>gost monitor</title><style>html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}#app{height:100%;display:flex;flex-direction:column}header{padding:10px 14px;border-bottom:1px solid #eee;display:flex;gap:12px;align-items:center}main{flex:1;min-height:0;overflow:auto;padding:10px;display:grid;grid-template-columns:1fr;gap:10px}.card{border:1px solid #eee;border-radius:8px;padding:8px;min-height:240px}.card h3{margin:0 0 6px 0;font-size:14px;font-weight:600;color:#111}.chart{height:220px}.list{height:220px;overflow:auto;white-space:pre;font-size:13px;line-height:1.4}</style></head><body><div id='app'><header><strong>gost monitor</strong><span id='status'>loading...</span></header><main><div class='card'><h3>History</h3><div id='history' class='list'></div></div><div class='card'><h3>TCP EST (downstream)</h3><div id='connNow' style='font-size:13px;color:#666;margin-bottom:6px'></div><div id='chartConn' class='chart'></div></div><div class='card'><h3>Downstream -> gost traffic (total)</h3><div id='rxNow' style='font-size:13px;color:#666;margin-bottom:6px'></div><div id='chartRxTotal' class='chart'></div></div><div class='card'><h3>Downstream -> gost traffic (rate)</h3><div id='rxRateNow' style='font-size:13px;color:#666;margin-bottom:6px'></div><div id='chartRxRate' class='chart'></div></div></main></div><script src='https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js'></script><script>(function(){const statusEl=document.getElementById('status');const historyEl=document.getElementById('history');const connNowEl=document.getElementById('connNow');const rxNowEl=document.getElementById('rxNow');const rxRateNowEl=document.getElementById('rxRateNow');const chartConnEl=document.getElementById('chartConn');const chartRxEl=document.getElementById('chartRxTotal');const chartRxRateEl=document.getElementById('chartRxRate');const chartConn=chartConnEl?echarts.init(chartConnEl):null;const chartRx=chartRxEl?echarts.init(chartRxEl):null;const chartRxRate=chartRxRateEl?echarts.init(chartRxRateEl):null;function fmtTS(sec){const d=new Date((sec||0)*1000);const p=(n)=>String(n).padStart(2,'0');return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}function fmtBytes(v){v=Number(v||0);if(v<1024)return v.toFixed(0)+' B';if(v<1024*1024)return (v/1024).toFixed(2)+' KB';if(v<1024*1024*1024)return (v/1024/1024).toFixed(2)+' MB';return (v/1024/1024/1024).toFixed(2)+' GB';}function fmtKBps(v){v=Number(v||0);return v.toFixed(2)+' KB/s';}function setLine(chart,ts,vals,fmt){if(!chart)return;chart.setOption({grid:{left:60,right:20,top:10,bottom:30},xAxis:{type:'category',data:ts,axisLabel:{hideOverlap:true}},yAxis:{type:'value',axisLabel:{formatter:(v)=>fmt?fmt(v):v}},series:[{type:'line',data:vals,smooth:true,showSymbol:false}]});}async function load(){try{const limit=300;const res=await fetch('series?limit='+limit,{cache:'no-store'});const j=await res.json();const data=(j&&j.data)||[];statusEl.textContent='points: '+data.length+' (limit '+limit+')';const ts=[];const tsSec=[];const conn=[];const rxTotal=[];for(let i=0;i<data.length;i++){const x=data[i]||{};ts.push(fmtTS(x.ts||0));tsSec.push(x.ts||0);conn.push(x.conn8000Est||0);rxTotal.push(x.downstreamRxTotal||0);}const rxRate=[];for(let i=0;i<rxTotal.length;i++){if(i===0){rxRate.push(0);continue;}const dt=(tsSec[i]-tsSec[i-1]);if(dt<=0){rxRate.push(0);continue;}const dr=(rxTotal[i]-rxTotal[i-1]);if(dr<0){rxRate.push(0);continue;}rxRate.push((dr/dt)/1024);}if(conn.length>0&&connNowEl){connNowEl.textContent='current: '+conn[conn.length-1];}if(rxTotal.length>0&&rxNowEl){rxNowEl.textContent='current: '+fmtBytes(rxTotal[rxTotal.length-1]);}if(rxRate.length>0&&rxRateNowEl){rxRateNowEl.textContent='current: '+fmtKBps(rxRate[rxRate.length-1]);}setLine(chartConn,ts,conn);setLine(chartRx,ts,rxTotal,fmtBytes);setLine(chartRxRate,ts,rxRate,fmtKBps);const hres=await fetch('history?limit=200',{cache:'no-store'});const ht=await hres.text();if(historyEl){historyEl.textContent=ht||'(empty)';}}catch(e){statusEl.textContent='error';}}load();setInterval(load,30000);window.addEventListener('resize',()=>{if(chartConn)chartConn.resize();if(chartRx)chartRx.resize();if(chartRxRate)chartRxRate.resize();});})();</script></body></html>`
+const monitorHTML = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>monitor</title>
+    <style>
+      :root {
+        --border: #eaecef;
+        --muted: #6b7280;
+        --bg: #ffffff;
+        --panel: #ffffff;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: var(--bg);
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      }
+      #app {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+      }
+      header {
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      header strong {
+        font-weight: 700;
+      }
+      #status {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      main {
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        padding: 12px;
+      }
+      .layout {
+        height: 100%;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 440px;
+        gap: 12px;
+      }
+      .left {
+        min-width: 0;
+        display: grid;
+        grid-template-rows: 1fr 1fr 1fr;
+        gap: 12px;
+      }
+      .right {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .card {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--panel);
+        padding: 10px;
+        min-height: 0;
+      }
+      .card h3 {
+        margin: 0 0 6px 0;
+        font-size: 13px;
+        font-weight: 700;
+        color: #111;
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .meta {
+        font-size: 12px;
+        color: var(--muted);
+        font-weight: 500;
+      }
+      .chart {
+        height: calc(100% - 20px);
+        min-height: 200px;
+      }
+      .history {
+        flex: 1;
+        overflow: auto;
+        white-space: pre;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      @media (max-width: 1100px) {
+        main {
+          overflow: auto;
+        }
+        .layout {
+          height: auto;
+          grid-template-columns: 1fr;
+        }
+        .left {
+          grid-template-rows: auto;
+        }
+        .chart {
+          height: 240px;
+        }
+        .right {
+          height: 360px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <strong>gost monitor</strong>
+        <span id="status">loading...</span>
+      </header>
+      <main>
+        <div class="layout">
+          <div class="left">
+            <div class="card">
+              <h3>
+                <span>TCP EST (downstream)</span>
+                <span id="connNow" class="meta"></span>
+              </h3>
+              <div id="chartConn" class="chart"></div>
+            </div>
+            <div class="card">
+              <h3>
+                <span>Downstream -> gost traffic (total)</span>
+                <span id="rxNow" class="meta"></span>
+              </h3>
+              <div id="chartRxTotal" class="chart"></div>
+            </div>
+            <div class="card">
+              <h3>
+                <span>Downstream -> gost traffic (rate)</span>
+                <span id="rxRateNow" class="meta"></span>
+              </h3>
+              <div id="chartRxRate" class="chart"></div>
+            </div>
+          </div>
+          <div class="right">
+            <div class="card" style="flex: 1">
+              <h3>
+                <span>History</span>
+                <span class="meta">last 200</span>
+              </h3>
+              <div id="history" class="history"></div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+    <script>
+      (function () {
+        const statusEl = document.getElementById("status");
+        const historyEl = document.getElementById("history");
+        const connNowEl = document.getElementById("connNow");
+        const rxNowEl = document.getElementById("rxNow");
+        const rxRateNowEl = document.getElementById("rxRateNow");
+
+        const chartConnEl = document.getElementById("chartConn");
+        const chartRxEl = document.getElementById("chartRxTotal");
+        const chartRxRateEl = document.getElementById("chartRxRate");
+
+        const chartConn = chartConnEl ? echarts.init(chartConnEl) : null;
+        const chartRx = chartRxEl ? echarts.init(chartRxEl) : null;
+        const chartRxRate = chartRxRateEl ? echarts.init(chartRxRateEl) : null;
+
+        function fmtTS(sec) {
+          const d = new Date((sec || 0) * 1000);
+          const p = (n) => String(n).padStart(2, "0");
+          return (
+            d.getFullYear() +
+            "-" +
+            p(d.getMonth() + 1) +
+            "-" +
+            p(d.getDate()) +
+            " " +
+            p(d.getHours()) +
+            ":" +
+            p(d.getMinutes()) +
+            ":" +
+            p(d.getSeconds())
+          );
+        }
+        function fmtBytes(v) {
+          v = Number(v || 0);
+          if (v < 1024) return v.toFixed(0) + " B";
+          if (v < 1024 * 1024) return (v / 1024).toFixed(2) + " KB";
+          if (v < 1024 * 1024 * 1024) return (v / 1024 / 1024).toFixed(2) + " MB";
+          return (v / 1024 / 1024 / 1024).toFixed(2) + " GB";
+        }
+        function fmtKBps(v) {
+          v = Number(v || 0);
+          return v.toFixed(2) + " KB/s";
+        }
+        function setLine(chart, ts, vals, yFmt) {
+          if (!chart) return;
+          chart.setOption({
+            grid: { left: 64, right: 18, top: 12, bottom: 30 },
+            xAxis: { type: "category", data: ts, axisLabel: { hideOverlap: true } },
+            yAxis: { type: "value", axisLabel: { formatter: (v) => (yFmt ? yFmt(v) : v) } },
+            series: [{ type: "line", data: vals, smooth: true, showSymbol: false, lineStyle: { width: 2 } }],
+            tooltip: { trigger: "axis" },
+          });
+        }
+
+        async function load() {
+          try {
+            const limit = 300;
+            const res = await fetch("series?limit=" + limit, { cache: "no-store" });
+            const j = await res.json();
+            const data = (j && j.data) || [];
+
+            statusEl.textContent = "points: " + data.length + " (limit " + limit + ")";
+
+            const ts = [];
+            const tsSec = [];
+            const conn = [];
+            const rxTotal = [];
+
+            for (let i = 0; i < data.length; i++) {
+              const x = data[i] || {};
+              ts.push(fmtTS(x.ts || 0));
+              tsSec.push(x.ts || 0);
+              conn.push(x.conn8000Est || 0);
+              rxTotal.push(x.downstreamRxTotal || 0);
+            }
+
+            const rxRate = [];
+            for (let i = 0; i < rxTotal.length; i++) {
+              if (i === 0) {
+                rxRate.push(0);
+                continue;
+              }
+              const dt = tsSec[i] - tsSec[i - 1];
+              if (dt <= 0) {
+                rxRate.push(0);
+                continue;
+              }
+              const dr = rxTotal[i] - rxTotal[i - 1];
+              if (dr < 0) {
+                rxRate.push(0);
+                continue;
+              }
+              rxRate.push(dr / dt / 1024);
+            }
+
+            if (conn.length > 0 && connNowEl) connNowEl.textContent = "current: " + conn[conn.length - 1];
+            if (rxTotal.length > 0 && rxNowEl) rxNowEl.textContent = "current: " + fmtBytes(rxTotal[rxTotal.length - 1]);
+            if (rxRate.length > 0 && rxRateNowEl) rxRateNowEl.textContent = "current: " + fmtKBps(rxRate[rxRate.length - 1]);
+
+            setLine(chartConn, ts, conn);
+            setLine(chartRx, ts, rxTotal, fmtBytes);
+            setLine(chartRxRate, ts, rxRate, fmtKBps);
+
+            const hres = await fetch("history?limit=200", { cache: "no-store" });
+            const ht = await hres.text();
+            if (historyEl) historyEl.textContent = ht || "(empty)";
+          } catch (e) {
+            statusEl.textContent = "error";
+          }
+        }
+
+        load();
+        setInterval(load, 30000);
+        window.addEventListener("resize", () => {
+          if (chartConn) chartConn.resize();
+          if (chartRx) chartRx.resize();
+          if (chartRxRate) chartRxRate.resize();
+        });
+      })();
+    </script>
+  </body>
+</html>
+`
+
+const monitorHTMLLite = `<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>monitor</title><style>html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}#app{height:100%;display:flex;flex-direction:column}header{padding:10px 14px;border-bottom:1px solid #eee;display:flex;gap:12px;align-items:center}main{flex:1;min-height:0;overflow:auto;padding:10px;display:grid;grid-template-columns:1fr;gap:10px}.card{border:1px solid #eee;border-radius:8px;padding:8px;min-height:240px}.card h3{margin:0 0 6px 0;font-size:14px;font-weight:600;color:#111}.chart{height:220px}.list{height:220px;overflow:auto;white-space:pre;font-size:13px;line-height:1.4}</style></head><body><div id='app'><header><strong>gost monitor</strong><span id='status'>loading...</span></header><main><div class='card'><h3>History</h3><div id='history' class='list'></div></div><div class='card'><h3>TCP EST (downstream)</h3><div id='connNow' style='font-size:13px;color:#666;margin-bottom:6px'></div><div id='chartConn' class='chart'></div></div><div class='card'><h3>Downstream -> gost traffic (total)</h3><div id='rxNow' style='font-size:13px;color:#666;margin-bottom:6px'></div><div id='chartRxTotal' class='chart'></div></div><div class='card'><h3>Downstream -> gost traffic (rate)</h3><div id='rxRateNow' style='font-size:13px;color:#666;margin-bottom:6px'></div><div id='chartRxRate' class='chart'></div></div></main></div><script src='https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js'></script><script>(function(){const statusEl=document.getElementById('status');const historyEl=document.getElementById('history');const connNowEl=document.getElementById('connNow');const rxNowEl=document.getElementById('rxNow');const rxRateNowEl=document.getElementById('rxRateNow');const chartConnEl=document.getElementById('chartConn');const chartRxEl=document.getElementById('chartRxTotal');const chartRxRateEl=document.getElementById('chartRxRate');const chartConn=chartConnEl?echarts.init(chartConnEl):null;const chartRx=chartRxEl?echarts.init(chartRxEl):null;const chartRxRate=chartRxRateEl?echarts.init(chartRxRateEl):null;function fmtTS(sec){const d=new Date((sec||0)*1000);const p=(n)=>String(n).padStart(2,'0');return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}function fmtBytes(v){v=Number(v||0);if(v<1024)return v.toFixed(0)+' B';if(v<1024*1024)return (v/1024).toFixed(2)+' KB';if(v<1024*1024*1024)return (v/1024/1024).toFixed(2)+' MB';return (v/1024/1024/1024).toFixed(2)+' GB';}function fmtKBps(v){v=Number(v||0);return v.toFixed(2)+' KB/s';}function setLine(chart,ts,vals,fmt){if(!chart)return;chart.setOption({grid:{left:60,right:20,top:10,bottom:30},xAxis:{type:'category',data:ts,axisLabel:{hideOverlap:true}},yAxis:{type:'value',axisLabel:{formatter:(v)=>fmt?fmt(v):v}},series:[{type:'line',data:vals,smooth:true,showSymbol:false}]});}async function load(){try{const limit=300;const res=await fetch('series?limit='+limit,{cache:'no-store'});const j=await res.json();const data=(j&&j.data)||[];statusEl.textContent='points: '+data.length+' (limit '+limit+')';const ts=[];const tsSec=[];const conn=[];const rxTotal=[];for(let i=0;i<data.length;i++){const x=data[i]||{};ts.push(fmtTS(x.ts||0));tsSec.push(x.ts||0);conn.push(x.conn8000Est||0);rxTotal.push(x.downstreamRxTotal||0);}const rxRate=[];for(let i=0;i<rxTotal.length;i++){if(i===0){rxRate.push(0);continue;}const dt=(tsSec[i]-tsSec[i-1]);if(dt<=0){rxRate.push(0);continue;}const dr=(rxTotal[i]-rxTotal[i-1]);if(dr<0){rxRate.push(0);continue;}rxRate.push((dr/dt)/1024);}if(conn.length>0&&connNowEl){connNowEl.textContent='current: '+conn[conn.length-1];}if(rxTotal.length>0&&rxNowEl){rxNowEl.textContent='current: '+fmtBytes(rxTotal[rxTotal.length-1]);}if(rxRate.length>0&&rxRateNowEl){rxRateNowEl.textContent='current: '+fmtKBps(rxRate[rxRate.length-1]);}setLine(chartConn,ts,conn);setLine(chartRx,ts,rxTotal,fmtBytes);setLine(chartRxRate,ts,rxRate,fmtKBps);const hres=await fetch('history?limit=200',{cache:'no-store'});const ht=await hres.text();if(historyEl){historyEl.textContent=ht||'(empty)';}}catch(e){statusEl.textContent='error';}}load();setInterval(load,30000);window.addEventListener('resize',()=>{if(chartConn)chartConn.resize();if(chartRx)chartRx.resize();if(chartRxRate)chartRxRate.resize();});})();</script></body></html>`
