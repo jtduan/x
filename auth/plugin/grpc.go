@@ -62,11 +62,9 @@ func NewGRPCPlugin(name string, addr string, opts ...plugin.Option) auth.Authent
 // Authenticate checks the validity of the provided user-password pair.
 func (p *grpcPlugin) Authenticate(ctx context.Context, user, password string, opts ...auth.Option) (string, bool) {
 	if p.client == nil {
-		p.log.Info("authenticate: grpc client is nil")
 		return "", false
 	}
 	if user == "" {
-		p.log.Info("authenticate: empty user")
 		return "", false
 	}
 
@@ -75,22 +73,18 @@ func (p *grpcPlugin) Authenticate(ctx context.Context, user, password string, op
 		cacheKey = s
 	}
 	username := user
-	p.log.Infof("authenticate: user=%q cacheKey=%q password_len=%d", username, cacheKey, len(password))
 	if cacheKey != "" {
 		p.mu.Lock()
 		if ent, ok := p.cache[cacheKey]; ok {
 			if time.Now().Before(ent.expires) {
-				p.log.Infof("authenticate: cache hit key=%q ent_user=%q ent_id=%q", cacheKey, ent.user, ent.id)
-				if ent.user == username && ent.pass == password {
+				if ent.pass == password {
 					p.mu.Unlock()
-					p.log.Infof("authenticate: cache accept key=%q ok=%v", cacheKey, ent.ok)
 					return username, ent.ok
 				}
 				p.log.Infof("authenticate: cache mismatch key=%q req_user=%q ent_user=%q req_pass_len=%d ent_pass_len=%d", cacheKey, username, ent.user, len(password), len(ent.pass))
 				p.mu.Unlock()
 				return username, false
 			}
-			p.log.Infof("authenticate: cache expired key=%q", cacheKey)
 			delete(p.cache, cacheKey)
 		}
 		p.mu.Unlock()
@@ -104,7 +98,6 @@ func (p *grpcPlugin) Authenticate(ctx context.Context, user, password string, op
 	if v := xctx.SrcAddrFromContext(ctx); v != nil {
 		clientAddr = v.String()
 	}
-	p.log.Infof("authenticate: grpc request service=%q username=%q client=%q", options.Service, username, clientAddr)
 	r, err := p.client.Authenticate(ctx,
 		&proto.AuthenticateRequest{
 			Service:  options.Service,
@@ -116,7 +109,6 @@ func (p *grpcPlugin) Authenticate(ctx context.Context, user, password string, op
 		p.log.Error(err)
 		return "", false
 	}
-	p.log.Infof("authenticate: grpc response ok=%v id=%q", r.Ok, r.Id)
 	if cacheKey != "" && r.Ok {
 		p.mu.Lock()
 		p.cache[cacheKey] = grpcAuthCacheEntry{
@@ -127,7 +119,6 @@ func (p *grpcPlugin) Authenticate(ctx context.Context, user, password string, op
 			expires: time.Now().Add(5 * time.Minute),
 		}
 		p.mu.Unlock()
-		p.log.Infof("authenticate: cache store key=%q user=%q id=%q ttl=%s", cacheKey, username, r.Id, (5 * time.Minute).String())
 	}
 	return username, r.Ok
 }
