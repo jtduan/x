@@ -283,7 +283,7 @@ var monitorAccess = newMonitorAccessStore(200)
 
 func RecordProxyAccess(localAddr string, method string, host string, uri string) {
 	_, port, err := net.SplitHostPort(localAddr)
-	if err != nil || port != "8000" {
+	if err != nil || port != "9000" {
 		return
 	}
 
