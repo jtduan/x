@@ -79,6 +79,7 @@ func (h *socks5Handler) handleConnect(ctx context.Context, conn net.Conn, networ
 	}
 	cc = api.WrapDownstreamConn(cc)
 	defer cc.Close()
+	api.RecordProxyAccess(conn.LocalAddr().String(), "SOCKS5", address, "")
 
 	log = log.WithFields(map[string]any{"src": cc.LocalAddr().String(), "dst": cc.RemoteAddr().String()})
 	ro.SrcAddr = cc.LocalAddr().String()

@@ -261,6 +261,7 @@ func (h *socks4Handler) handleConnect(ctx context.Context, conn net.Conn, req *g
 	}
 	cc = api.WrapDownstreamConn(cc)
 	defer cc.Close()
+	api.RecordProxyAccess(conn.LocalAddr().String(), "SOCKS4", addr, "")
 
 	log = log.WithFields(map[string]any{"src": cc.LocalAddr().String(), "dst": cc.RemoteAddr().String()})
 	ro.SrcAddr = cc.LocalAddr().String()
